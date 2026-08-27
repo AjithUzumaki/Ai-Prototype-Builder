@@ -64,6 +64,11 @@ export default function Home() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const newPageInputRef = useRef<HTMLInputElement>(null);
 
+  // Figma export state
+  const [figmaLoading, setFigmaLoading] = useState(false);
+  const [figmaPopupUrl, setFigmaPopupUrl] = useState<string | null>(null);
+  const figmaPopupRef = useRef<HTMLDivElement>(null);
+
   const activePage = pages.find((p) => p.slug === activeSlug)!;
 
   // Listen for in-preview nav clicks and switch tabs (creating a blank page if needed).
@@ -84,6 +89,19 @@ export default function Home() {
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
   }, []);
+
+  // Close the Figma popup on outside click
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (figmaPopupRef.current && !figmaPopupRef.current.contains(e.target as Node)) {
+        setFigmaPopupUrl(null);
+      }
+    }
+    if (figmaPopupUrl) {
+      document.addEventListener("mousedown", handleClickOutside);
+    }
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [figmaPopupUrl]);
 
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -164,6 +182,33 @@ export default function Home() {
     a.download = `${activePage.slug}.html`;
     a.click();
     URL.revokeObjectURL(url);
+  }
+
+  async function handleCopyForFigma() {
+    if (!activePage.code || figmaLoading) return;
+    setFigmaLoading(true);
+    setError(null);
+
+    try {
+      const res = await fetch("/api/save-preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ html: activePage.code, slug: activePage.slug }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to prepare Figma link");
+      }
+
+      await navigator.clipboard.writeText(data.url);
+      setFigmaPopupUrl(data.url);
+    } catch (err: any) {
+      setError(err.message || "Couldn't prepare the Figma link.");
+    } finally {
+      setFigmaLoading(false);
+    }
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -334,14 +379,57 @@ export default function Home() {
               </button>
             )}
           </div>
-          <button
-            onClick={handleDownload}
-            disabled={!activePage.code}
-            className="shrink-0 text-xs px-3 py-1.5 rounded-md border border-line hover:border-violet disabled:opacity-30 transition-colors"
-            type="button"
-          >
-            Download HTML
-          </button>
+
+          <div className="flex items-center gap-2 shrink-0">
+            <div className="relative">
+              <button
+                onClick={handleCopyForFigma}
+                disabled={!activePage.code || figmaLoading}
+                className="shrink-0 text-xs px-3 py-1.5 rounded-md border border-line hover:border-violet disabled:opacity-30 transition-colors"
+                type="button"
+              >
+                {figmaLoading ? "Preparing..." : "Copy for Figma"}
+              </button>
+
+              {figmaPopupUrl && (
+                <div
+                  ref={figmaPopupRef}
+                  className="absolute right-0 z-50 mt-2 w-72 rounded-md border border-line bg-panel p-4 text-xs text-paper shadow-xl"
+                >
+                  <div className="mb-2 flex items-center justify-between">
+                    <span className="font-semibold text-paper">Link copied!</span>
+                    <button
+                      onClick={() => setFigmaPopupUrl(null)}
+                      className="text-mist hover:text-paper"
+                      aria-label="Close"
+                      type="button"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  <p className="mb-2 text-mist">
+                    Bring this design into Figma as editable layers:
+                  </p>
+                  <ol className="list-decimal space-y-1 pl-4 text-mist">
+                    <li>Open Figma, go to Plugins</li>
+                    <li>
+                      Search for <span className="text-violet">html.to.design</span>
+                    </li>
+                    <li>Paste the copied link and click Import</li>
+                  </ol>
+                </div>
+              )}
+            </div>
+
+            <button
+              onClick={handleDownload}
+              disabled={!activePage.code}
+              className="shrink-0 text-xs px-3 py-1.5 rounded-md border border-line hover:border-violet disabled:opacity-30 transition-colors"
+              type="button"
+            >
+              Download HTML
+            </button>
+          </div>
         </header>
         <div className="flex-1 bg-paper">
           {activePage.code ? (

@@ -1,24 +1,30 @@
 import { put } from "@vercel/blob";
 import { NextRequest, NextResponse } from "next/server";
+import { randomUUID } from "crypto";
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { html, slug } = body as { html?: string; slug?: string };
+    const { html } = body as { html?: string };
 
     if (!html || typeof html !== "string") {
       return NextResponse.json({ error: "Missing html" }, { status: 400 });
     }
 
-    const safeSlug = (slug || "page").replace(/[^a-z0-9-]/gi, "-");
-    const fileName = `previews/${safeSlug}-${Date.now()}.html`;
+    const id = randomUUID();
+    const pathname = `previews/${id}.html`;
 
-    const blob = await put(fileName, html, {
+    await put(pathname, html, {
       access: "public",
       contentType: "text/html",
+      addRandomSuffix: false,
     });
 
-    return NextResponse.json({ url: blob.url });
+    // Point Figma at our own proxy route (real webpage behavior),
+    // not the raw blob file URL (which gets treated as a download).
+    const previewUrl = `${req.nextUrl.origin}/api/preview/${id}`;
+
+    return NextResponse.json({ url: previewUrl });
   } catch (err: any) {
     console.error("Save preview error:", err);
     return NextResponse.json(

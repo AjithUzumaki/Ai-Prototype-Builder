@@ -1,6 +1,8 @@
 import { GoogleGenAI } from "@google/genai";
 import { NextRequest, NextResponse } from "next/server";
 
+export const maxDuration = 60;
+
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 // Free-tier Gemini model. See README for how to change this.

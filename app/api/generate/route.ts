@@ -154,14 +154,55 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const response = await ai.models.generateContent({
-      model: MODEL,
-      contents: [{ role: "user", parts }],
-      config: {
-        systemInstruction: buildSystemPrompt(otherPages || []),
-        maxOutputTokens: 16000,
-      },
-    });
+    async function callModel() {
+      return Promise.race([
+        ai.models.generateContent({
+          model: MODEL,
+          contents: [{ role: "user", parts }],
+          config: {
+            systemInstruction: buildSystemPrompt(otherPages || []),
+            maxOutputTokens: 16000,
+          },
+        }),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("MODEL_TIMEOUT")), 20000)
+        ),
+      ]) as any;
+    }
+
+    function isOverloadError(err: any) {
+      const msg = String(err?.message || err || "");
+      return (
+        msg === "MODEL_TIMEOUT" ||
+        msg.includes("UNAVAILABLE") ||
+        msg.includes("503") ||
+        msg.includes("overloaded")
+      );
+    }
+
+    let response;
+    try {
+      response = await callModel();
+    } catch (firstErr: any) {
+      if (!isOverloadError(firstErr)) throw firstErr;
+
+      // One automatic retry after a short pause — covers brief overload spikes.
+      await new Promise((r) => setTimeout(r, 3000));
+      try {
+        response = await callModel();
+      } catch (secondErr: any) {
+        if (isOverloadError(secondErr)) {
+          return NextResponse.json(
+            {
+              error:
+                "The AI model is currently experiencing high demand. Please wait a minute and try again.",
+            },
+            { status: 503 }
+          );
+        }
+        throw secondErr;
+      }
+    }
 
     const raw = response.text ?? "";
     let html = extractHtml(raw);

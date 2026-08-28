@@ -142,7 +142,14 @@ export default function Home() {
         }),
       });
 
-      const data = await res.json();
+      let data: any;
+      try {
+        data = await res.json();
+      } catch {
+        throw new Error(
+          "Server had trouble responding — this usually means high demand right now. Please try again in a moment."
+        );
+      }
 
       if (!res.ok) {
         throw new Error(data.error || "Generation failed");

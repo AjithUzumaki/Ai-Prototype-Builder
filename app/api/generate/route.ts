@@ -1,22 +1,39 @@
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 import { NextRequest, NextResponse } from "next/server";
 
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-
-// Free-tier Gemini model. See README for how to change this.
-const MODEL = "gemini-3.6-flash";
-// Used automatically if the primary model is overloaded — a currently
-// supported, typically less congested model, as a reliability safety net.
-const FALLBACK_MODEL = "gemini-2.5-flash-lite";
+const MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
+const FALLBACK_MODELS = [
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
+];
 
 const PEXELS_API_KEY = process.env.PEXELS_API_KEY;
 
-function buildSystemPrompt(otherPages: { slug: string; label: string }[]) {
+function getClient() {
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
+  if (!apiKey) {
+    throw new Error(
+      "GEMINI_API_KEY is not set. Add it in Vercel → Project → Settings → Environment Variables, then redeploy."
+    );
+  }
+  return new GoogleGenAI({ apiKey });
+}
+
+function buildSystemPrompt(
+  otherPages: { slug: string; label: string }[],
+  stylePreset?: string
+) {
   const pageList = otherPages.length
     ? otherPages.map((p) => `- slug: "${p.slug}", label: "${p.label}"`).join("\n")
     : "(none yet — this may be the only page so far)";
+
+  const styleHint = stylePreset
+    ? `Visual direction for this page: ${stylePreset}. Commit to that aesthetic in type, color, spacing, and motion.`
+    : "Give the design a real point of view (a considered palette, real type scale, one signature visual moment) rather than a generic template.";
 
   return `You are a senior frontend engineer who builds interactive website prototypes as part of a MULTI-PAGE site.
 
@@ -31,7 +48,7 @@ Rules — follow exactly:
 8. For simple decorative or abstract placeholder shapes where the actual content doesn't matter (e.g. a generic colored block), you may use https://picsum.photos/seed/<word>/<w>/<h> — never invent other external image URLs.
 9. If asked to refine existing code, return the FULL updated HTML document with the requested change applied — never a diff or partial snippet.
 10. Pick fonts from Google Fonts via a <link> tag if a distinctive typeface improves the design; otherwise use clean system fonts.
-11. Give the design a real point of view (a considered palette, real type scale, one signature visual moment) rather than a generic template.
+11. ${styleHint}
 12. Keep scope realistic for a single response: one focused page (not a dozen dense sections) unless explicitly asked for a long page. Always finish the document completely — a valid ending </html> tag is mandatory, even if that means a simpler design.
 13. Write markup so it converts cleanly into design tools (e.g. Figma import plugins):
     - Prefer simple flexbox or CSS grid for layout; avoid complex nested positioning tricks.
@@ -51,13 +68,31 @@ ${pageList}
 }
 
 function extractHtml(raw: string): string {
-  // Strip markdown fences if the model adds them despite instructions.
   const fenced = raw.match(/```(?:html)?\s*([\s\S]*?)```/i);
   const candidate = fenced ? fenced[1] : raw;
   return candidate.trim();
 }
 
-// Finds src="pexels:<query>" occurrences and replaces them with real photo URLs.
+function responseText(response: any): string {
+  if (typeof response?.text === "string" && response.text.trim()) {
+    return response.text;
+  }
+
+  const parts = response?.candidates?.[0]?.content?.parts;
+  if (!Array.isArray(parts)) return "";
+
+  return parts
+    .filter((part: any) => part && !part.thought && typeof part.text === "string")
+    .map((part: any) => part.text)
+    .join("")
+    .trim();
+}
+
+function looksComplete(html: string): boolean {
+  const lower = html.trim().toLowerCase();
+  return lower.includes("<!doctype html") && lower.endsWith("</html>");
+}
+
 async function resolvePexelsImages(html: string): Promise<string> {
   const regex = /src="pexels:([^"]+)"/g;
   const matches = Array.from(html.matchAll(regex));
@@ -65,7 +100,6 @@ async function resolvePexelsImages(html: string): Promise<string> {
   if (matches.length === 0) return html;
 
   if (!PEXELS_API_KEY) {
-    // No key configured — fall back to picsum so the page still renders something.
     return html.replace(regex, (_match, query: string) => {
       const seed = encodeURIComponent(query.trim().replace(/\s+/g, "-"));
       return `src="https://picsum.photos/seed/${seed}/800/600"`;
@@ -79,7 +113,7 @@ async function resolvePexelsImages(html: string): Promise<string> {
     uniqueQueries.map(async (query) => {
       try {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 5000);
+        const timeoutId = setTimeout(() => controller.abort(), 4000);
 
         const res = await fetch(
           `https://api.pexels.com/v1/search?query=${encodeURIComponent(
@@ -111,9 +145,54 @@ async function resolvePexelsImages(html: string): Promise<string> {
   );
 
   return html.replace(regex, (_match, query: string) => {
-    const url = queryToUrl.get(query.trim()) || "https://picsum.photos/seed/fallback/800/600";
+    const url =
+      queryToUrl.get(query.trim()) || "https://picsum.photos/seed/fallback/800/600";
     return `src="${url}"`;
   });
+}
+
+function friendlyGeminiError(err: any): { message: string; status: number } {
+  const msg = String(err?.message || err || "");
+  const status = Number(err?.status || err?.statusCode || 0);
+
+  if (msg.includes("GEMINI_API_KEY is not set")) {
+    return { message: msg, status: 500 };
+  }
+  if (status === 401 || msg.includes("API_KEY_INVALID") || msg.includes("401")) {
+    return {
+      message:
+        "Gemini rejected the API key. Check GEMINI_API_KEY in Vercel env vars (Google AI Studio key, not a Cloud service account).",
+      status: 401,
+    };
+  }
+  if (status === 429 || msg.includes("RESOURCE_EXHAUSTED") || msg.includes("429")) {
+    return {
+      message:
+        "Gemini rate limit hit. Wait a minute, or check quota in Google AI Studio.",
+      status: 429,
+    };
+  }
+  if (msg.includes("not found") || msg.includes("NOT_FOUND") || status === 404) {
+    return {
+      message:
+        "The Gemini model name is not available on this key. Try setting GEMINI_MODEL to gemini-2.5-flash in Vercel env vars.",
+      status: 502,
+    };
+  }
+  if (
+    msg === "MODEL_TIMEOUT" ||
+    msg.includes("UNAVAILABLE") ||
+    msg.includes("503") ||
+    msg.includes("overloaded")
+  ) {
+    return {
+      message:
+        "The AI model is busy or timed out. Wait a moment and try a shorter prompt.",
+      status: 503,
+    };
+  }
+
+  return { message: msg || "Generation failed", status: 500 };
 }
 
 export async function POST(req: NextRequest) {
@@ -126,6 +205,7 @@ export async function POST(req: NextRequest) {
       previousCode,
       currentPageLabel,
       otherPages,
+      stylePreset,
     } = body as {
       prompt: string;
       imageBase64?: string;
@@ -133,11 +213,14 @@ export async function POST(req: NextRequest) {
       previousCode?: string;
       currentPageLabel?: string;
       otherPages?: { slug: string; label: string }[];
+      stylePreset?: string;
     };
 
     if (!prompt || typeof prompt !== "string") {
       return NextResponse.json({ error: "Missing prompt" }, { status: 400 });
     }
+
+    const ai = getClient();
 
     let instructionText = prompt;
     if (previousCode) {
@@ -158,37 +241,40 @@ export async function POST(req: NextRequest) {
     }
 
     async function callModel(modelName: string) {
+      const isGemini3 = modelName.startsWith("gemini-3");
       return Promise.race([
         ai.models.generateContent({
           model: modelName,
           contents: [{ role: "user", parts }],
           config: {
-            systemInstruction: buildSystemPrompt(otherPages || []),
-            maxOutputTokens: 16000,
+            systemInstruction: buildSystemPrompt(otherPages || [], stylePreset),
+            maxOutputTokens: 24000,
+            ...(isGemini3
+              ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
+              : {}),
           },
         }),
         new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("MODEL_TIMEOUT")), 15000)
+          setTimeout(() => reject(new Error("MODEL_TIMEOUT")), 45000)
         ),
       ]) as any;
     }
 
-    function isOverloadError(err: any) {
+    function isRetryable(err: any) {
       const msg = String(err?.message || err || "");
       return (
         msg === "MODEL_TIMEOUT" ||
         msg.includes("UNAVAILABLE") ||
         msg.includes("503") ||
-        msg.includes("overloaded")
+        msg.includes("overloaded") ||
+        msg.includes("NOT_FOUND") ||
+        msg.includes("not found")
       );
     }
 
     let response;
     let lastErr: any = null;
-
-    // Attempt order: primary, primary again, then fallback model.
-    // Total worst case stays comfortably under Vercel's 60s limit.
-    const attempts = [MODEL, MODEL, FALLBACK_MODEL];
+    const attempts = [MODEL, ...FALLBACK_MODELS.filter((m) => m !== MODEL)];
 
     for (let i = 0; i < attempts.length; i++) {
       try {
@@ -197,52 +283,48 @@ export async function POST(req: NextRequest) {
         break;
       } catch (err: any) {
         lastErr = err;
-        if (!isOverloadError(err)) throw err;
-        if (i < attempts.length - 1) {
-          await new Promise((r) => setTimeout(r, 2000));
+        if (!isRetryable(err) || i === attempts.length - 1) {
+          const mapped = friendlyGeminiError(err);
+          return NextResponse.json(
+            { error: mapped.message },
+            { status: mapped.status }
+          );
         }
+        await new Promise((r) => setTimeout(r, 800));
       }
     }
 
     if (lastErr) {
-      return NextResponse.json(
-        {
-          error:
-            "The AI model is currently experiencing high demand across all available models. Please wait a minute and try again.",
-        },
-        { status: 503 }
-      );
+      const mapped = friendlyGeminiError(lastErr);
+      return NextResponse.json({ error: mapped.message }, { status: mapped.status });
     }
 
-    const raw = response.text ?? "";
+    const raw = responseText(response);
     let html = extractHtml(raw);
 
     if (!html) {
       return NextResponse.json(
-        { error: "Model returned no usable HTML" },
+        { error: "Model returned no usable HTML. Try again with a shorter prompt." },
         { status: 502 }
       );
     }
 
-    if (!html.trim().toLowerCase().endsWith("</html>")) {
+    if (!looksComplete(html)) {
       return NextResponse.json(
         {
           error:
-            "The generated page got cut off before it finished (too ambitious for one response). Try a simpler or shorter description, or ask again.",
+            "The generated page was cut off before it finished. Try a simpler description, or ask for fewer sections.",
         },
         { status: 502 }
       );
     }
 
-    // Replace pexels: markers with real, relevant photo URLs.
     html = await resolvePexelsImages(html);
 
     return NextResponse.json({ code: html });
   } catch (err: any) {
     console.error("Generate error:", err);
-    return NextResponse.json(
-      { error: err?.message || "Generation failed" },
-      { status: 500 }
-    );
+    const mapped = friendlyGeminiError(err);
+    return NextResponse.json({ error: mapped.message }, { status: mapped.status });
   }
 }

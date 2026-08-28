@@ -10,19 +10,37 @@ type Message = {
 type SitePage = {
   slug: string;
   label: string;
-  code: string; // "" until generated
+  code: string;
 };
 
+type Viewport = "desktop" | "tablet" | "mobile";
+type Panel = "chat" | "preview";
+
+const STYLE_PRESETS = [
+  { id: "", label: "Auto" },
+  { id: "Editorial / magazine — large type, generous whitespace, serif headlines", label: "Editorial" },
+  { id: "Soft luxury — cream, charcoal, gold accents, slow elegant motion", label: "Luxury" },
+  { id: "Playful product — bold color, rounded cards, bouncy micro-interactions", label: "Playful" },
+  { id: "Brutalist — raw type, hard edges, high contrast, almost no decoration", label: "Brutalist" },
+  { id: "Calm SaaS — cool neutrals, clear hierarchy, product-demo feel", label: "SaaS" },
+];
+
+const EXAMPLE_PROMPTS = [
+  "A boutique coffee roaster in Kyoto — hero with steam, tasting notes, and a shop CTA",
+  "Portfolio for a motion designer — dark, cinematic, case-study grid",
+  "Wellness retreat landing — soft greens, booking form, slow scroll reveals",
+];
+
 function slugify(label: string): string {
-  return label
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/(^-|-$)/g, "") || "page";
+  return (
+    label
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/(^-|-$)/g, "") || "page"
+  );
 }
 
-// Injects a small script so clicks on internal nav links (href="#page:slug")
-// talk to the parent app instead of doing nothing inside the sandboxed iframe.
 function withNavBridge(html: string): string {
   const bridge = `
 <script>
@@ -50,7 +68,7 @@ export default function Home() {
   const [messages, setMessages] = useState<Message[]>([
     {
       role: "assistant",
-      text: "Describe the website you want, or attach a design image. Add more pages with the + tab above the preview — nav links between pages will work automatically.",
+      text: "Describe the website you want, or attach a design image. Add more pages with the + tab — nav links between pages will work automatically.",
     },
   ]);
   const [input, setInput] = useState("");
@@ -61,17 +79,28 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [addingPage, setAddingPage] = useState(false);
   const [newPageName, setNewPageName] = useState("");
+  const [stylePreset, setStylePreset] = useState("");
+  const [viewport, setViewport] = useState<Viewport>("desktop");
+  const [mobilePanel, setMobilePanel] = useState<Panel>("chat");
+  const [setup, setSetup] = useState<{ gemini: boolean; pexels: boolean; blob: boolean } | null>(
+    null
+  );
   const fileInputRef = useRef<HTMLInputElement>(null);
   const newPageInputRef = useRef<HTMLInputElement>(null);
 
-  // Figma export state
   const [figmaLoading, setFigmaLoading] = useState(false);
   const [figmaPopupUrl, setFigmaPopupUrl] = useState<string | null>(null);
   const figmaPopupRef = useRef<HTMLDivElement>(null);
 
   const activePage = pages.find((p) => p.slug === activeSlug)!;
 
-  // Listen for in-preview nav clicks and switch tabs (creating a blank page if needed).
+  useEffect(() => {
+    fetch("/api/health")
+      .then((res) => res.json())
+      .then(setSetup)
+      .catch(() => setSetup(null));
+  }, []);
+
   useEffect(() => {
     function handleMessage(e: MessageEvent) {
       if (!e.data || e.data.type !== "ppb-navigate") return;
@@ -85,12 +114,12 @@ export default function Home() {
         return [...prev, { slug, label, code: "" }];
       });
       setActiveSlug(slug);
+      setMobilePanel("preview");
     }
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
   }, []);
 
-  // Close the Figma popup on outside click
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
       if (figmaPopupRef.current && !figmaPopupRef.current.contains(e.target as Node)) {
@@ -118,9 +147,13 @@ export default function Home() {
   const lastPromptRef = useRef<string>("");
   const lastImageRef = useRef<{ base64: string; mediaType: string; name: string } | null>(null);
 
-  async function performGenerate(promptText: string, imgOverride?: { base64: string; mediaType: string; name: string } | null) {
+  async function performGenerate(
+    promptText: string,
+    imgOverride?: { base64: string; mediaType: string; name: string } | null
+  ) {
     setError(null);
     setLoading(true);
+    setMobilePanel("preview");
 
     const otherPages = pages
       .filter((p) => p.slug !== activeSlug)
@@ -137,6 +170,7 @@ export default function Home() {
           previousCode: activePage.code || undefined,
           currentPageLabel: activePage.label,
           otherPages,
+          stylePreset: stylePreset || undefined,
         }),
       });
 
@@ -145,7 +179,7 @@ export default function Home() {
         data = await res.json();
       } catch {
         throw new Error(
-          "Server had trouble responding — this usually means high demand right now. Please try again in a moment."
+          "The server did not return JSON. On Vercel this usually means a timeout or missing GEMINI_API_KEY. Try a shorter prompt, then check env vars."
         );
       }
 
@@ -173,6 +207,7 @@ export default function Home() {
         ...m,
         { role: "assistant", text: `Couldn't generate that: ${err.message}` },
       ]);
+      setMobilePanel("chat");
     } finally {
       setLoading(false);
     }
@@ -201,7 +236,7 @@ export default function Home() {
     setMessages([
       {
         role: "assistant",
-        text: "Describe the website you want, or attach a design image. Add more pages with the + tab above the preview — nav links between pages will work automatically.",
+        text: "Describe the website you want, or attach a design image. Add more pages with the + tab — nav links between pages will work automatically.",
       },
     ]);
     setError(null);
@@ -276,18 +311,41 @@ export default function Home() {
     [activePage.code]
   );
 
+  const viewportWidth =
+    viewport === "mobile" ? "390px" : viewport === "tablet" ? "768px" : "100%";
+
   return (
-    <main className="h-screen w-screen flex bg-ink text-paper font-body overflow-hidden">
-      {/* Chat panel */}
-      <section className="w-[400px] shrink-0 border-r border-line flex flex-col">
+    <main className="h-screen w-screen flex flex-col md:flex-row bg-ink text-paper font-body overflow-hidden">
+      <div className="md:hidden flex border-b border-line">
+        <button
+          type="button"
+          onClick={() => setMobilePanel("chat")}
+          className={`flex-1 py-3 text-xs uppercase tracking-wider ${
+            mobilePanel === "chat" ? "text-violet border-b-2 border-violet" : "text-mist"
+          }`}
+        >
+          Chat
+        </button>
+        <button
+          type="button"
+          onClick={() => setMobilePanel("preview")}
+          className={`flex-1 py-3 text-xs uppercase tracking-wider ${
+            mobilePanel === "preview" ? "text-violet border-b-2 border-violet" : "text-mist"
+          }`}
+        >
+          Preview
+        </button>
+      </div>
+
+      <section
+        className={`${
+          mobilePanel === "chat" ? "flex" : "hidden"
+        } md:flex w-full md:w-[400px] shrink-0 border-r border-line flex-col min-h-0`}
+      >
         <header className="px-5 py-4 border-b border-line flex items-center justify-between">
           <div>
-            <h1 className="font-display text-lg font-semibold tracking-tight">
-              Prototype
-            </h1>
-            <p className="text-xs text-mist mt-0.5">
-              Describe it. Sketch it. Watch it animate.
-            </p>
+            <h1 className="font-display text-lg font-semibold tracking-tight">Prototype</h1>
+            <p className="text-xs text-mist mt-0.5">Describe it. Sketch it. Watch it animate.</p>
           </div>
           <button
             onClick={handleClearChat}
@@ -298,10 +356,34 @@ export default function Home() {
           </button>
         </header>
 
+        {setup && !setup.gemini && (
+          <div className="mx-4 mt-4 text-xs leading-relaxed rounded-md border border-amber/40 bg-amber/10 text-amber px-3 py-2">
+            Gemini is not configured on this deployment. Add <span className="font-mono">GEMINI_API_KEY</span> in Vercel env vars and redeploy.
+          </div>
+        )}
+
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
           <div className="text-[11px] text-mist font-mono uppercase tracking-wider">
             Editing: <span className="text-violet">{activePage.label}</span>
           </div>
+
+          <div className="flex flex-wrap gap-1.5">
+            {STYLE_PRESETS.map((preset) => (
+              <button
+                key={preset.label}
+                type="button"
+                onClick={() => setStylePreset(preset.id)}
+                className={`text-[10px] px-2 py-1 rounded-md border transition-colors ${
+                  stylePreset === preset.id
+                    ? "border-violet text-violet bg-violet/10"
+                    : "border-line text-mist hover:text-paper"
+                }`}
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
+
           {messages.map((m, i) => (
             <div
               key={i}
@@ -315,11 +397,33 @@ export default function Home() {
               {m.text}
             </div>
           ))}
+
+          {!activePage.code && !loading && messages.length < 3 && (
+            <div className="space-y-2">
+              <div className="text-[10px] uppercase tracking-wider text-mist font-mono">
+                Try one
+              </div>
+              {EXAMPLE_PROMPTS.map((prompt) => (
+                <button
+                  key={prompt}
+                  type="button"
+                  onClick={() => setInput(prompt)}
+                  className="block w-full text-left text-xs text-mist border border-line rounded-md px-3 py-2 hover:border-violet hover:text-paper transition-colors"
+                >
+                  {prompt}
+                </button>
+              ))}
+            </div>
+          )}
+
           {loading && (
-            <div className="flex gap-1.5 items-center pt-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-violet pulse-dot" style={{ animationDelay: "0ms" }} />
-              <span className="w-1.5 h-1.5 rounded-full bg-violet pulse-dot" style={{ animationDelay: "150ms" }} />
-              <span className="w-1.5 h-1.5 rounded-full bg-violet pulse-dot" style={{ animationDelay: "300ms" }} />
+            <div className="space-y-2">
+              <div className="flex gap-1.5 items-center pt-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-violet pulse-dot" style={{ animationDelay: "0ms" }} />
+                <span className="w-1.5 h-1.5 rounded-full bg-violet pulse-dot" style={{ animationDelay: "150ms" }} />
+                <span className="w-1.5 h-1.5 rounded-full bg-violet pulse-dot" style={{ animationDelay: "300ms" }} />
+              </div>
+              <p className="text-xs text-mist">Building the page — this can take 20–40 seconds.</p>
             </div>
           )}
         </div>
@@ -390,9 +494,12 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Preview panel */}
-      <section className="flex-1 flex flex-col">
-        <header className="px-5 py-3 border-b border-line flex items-center justify-between gap-4">
+      <section
+        className={`${
+          mobilePanel === "preview" ? "flex" : "hidden"
+        } md:flex flex-1 flex-col min-h-0`}
+      >
+        <header className="px-4 py-3 border-b border-line flex items-center justify-between gap-3">
           <div className="flex items-center gap-1 overflow-x-auto">
             {pages.map((p) => (
               <button
@@ -439,6 +546,21 @@ export default function Home() {
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
+            <div className="hidden sm:flex rounded-md border border-line overflow-hidden">
+              {(["desktop", "tablet", "mobile"] as Viewport[]).map((size) => (
+                <button
+                  key={size}
+                  type="button"
+                  onClick={() => setViewport(size)}
+                  className={`text-[10px] px-2 py-1.5 capitalize ${
+                    viewport === size ? "bg-violet/15 text-violet" : "text-mist"
+                  }`}
+                >
+                  {size === "desktop" ? "Desk" : size === "tablet" ? "Tab" : "Mob"}
+                </button>
+              ))}
+            </div>
+
             <div className="relative">
               <button
                 onClick={handleCopyForFigma}
@@ -465,9 +587,7 @@ export default function Home() {
                       ✕
                     </button>
                   </div>
-                  <p className="mb-2 text-mist">
-                    Bring this design into Figma as editable layers:
-                  </p>
+                  <p className="mb-2 text-mist">Bring this design into Figma as editable layers:</p>
                   <ol className="list-decimal space-y-1 pl-4 text-mist">
                     <li>Open Figma, go to Plugins</li>
                     <li>
@@ -485,22 +605,25 @@ export default function Home() {
               className="shrink-0 text-xs px-3 py-1.5 rounded-md border border-line hover:border-violet disabled:opacity-30 transition-colors"
               type="button"
             >
-              Download HTML
+              HTML
             </button>
           </div>
         </header>
-        <div className="flex-1 bg-paper">
+        <div className="flex-1 bg-[#cfc8bf] flex items-stretch justify-center overflow-auto">
           {activePage.code ? (
             <iframe
-              key={activeSlug}
+              key={`${activeSlug}-${viewport}`}
               title={`preview-${activeSlug}`}
               srcDoc={previewHtml}
               sandbox="allow-scripts"
-              className="w-full h-full border-0"
+              className="h-full border-0 bg-white shadow-xl"
+              style={{ width: viewportWidth, maxWidth: "100%" }}
             />
           ) : (
-            <div className="h-full flex items-center justify-center text-ink/40 text-sm font-mono text-center px-8">
-              "{activePage.label}" hasn't been generated yet — describe it in the chat
+            <div className="h-full w-full flex items-center justify-center text-ink/50 text-sm font-mono text-center px-8 bg-paper">
+              {loading
+                ? "Generating..."
+                : `"${activePage.label}" hasn't been generated yet — describe it in the chat`}
             </div>
           )}
         </div>

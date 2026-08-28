@@ -2,8 +2,21 @@ import { put } from "@vercel/blob";
 import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "crypto";
 
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
 export async function POST(req: NextRequest) {
   try {
+    if (!process.env.BLOB_READ_WRITE_TOKEN?.trim()) {
+      return NextResponse.json(
+        {
+          error:
+            "Figma export needs Vercel Blob. In Vercel: Storage → Blob → Create, then redeploy so BLOB_READ_WRITE_TOKEN is available.",
+        },
+        { status: 500 }
+      );
+    }
+
     const body = await req.json();
     const { html } = body as { html?: string };
 
@@ -20,8 +33,6 @@ export async function POST(req: NextRequest) {
       addRandomSuffix: false,
     });
 
-    // Point Figma at our own proxy route (real webpage behavior),
-    // not the raw blob file URL (which gets treated as a download).
     const previewUrl = `${req.nextUrl.origin}/api/preview/${id}`;
 
     return NextResponse.json({ url: previewUrl });

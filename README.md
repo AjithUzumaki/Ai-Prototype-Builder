@@ -1,39 +1,29 @@
 # Prototype — AI Website Generator
 
-Describe a website (or attach a design image), and get back a live, animated,
-clickable HTML/CSS/JS prototype rendered right in the browser.
-
-## How it works
-
-- **Frontend** (`app/page.tsx`): a chat UI on the left, a live preview `<iframe>` on the right.
-- **Backend** (`app/api/generate/route.ts`): a Next.js API route that calls the
-  Anthropic API with your prompt (and image, if attached) and asks it to return
-  one complete, self-contained HTML file with inline CSS/JS and real animations.
-- **Refine loop**: every follow-up message sends the *current* generated code back
-  to the model along with your new instruction, so you can iterate ("make the
-  hero animation slower", "switch to a dark theme") without starting over.
-- The generated HTML renders in a sandboxed `<iframe>` — this is what makes it a
-  real, interactive prototype rather than a screenshot.
+Describe a website (or attach a design image) and get a live, animated HTML prototype in the browser.
 
 ## Setup
 
-1. **Install dependencies**
+1. Install dependencies (`Node 20+` required):
 
    ```bash
    npm install
    ```
 
-2. **Add your Anthropic API key**
-
-   Copy `.env.example` to `.env.local` and paste in your key:
+2. Copy `.env.example` to `.env.local` and fill in keys:
 
    ```bash
-   cp .env.example .env.local
+   copy .env.example .env.local
    ```
 
-   Get a key at https://console.anthropic.com (Anthropic API, not claude.ai).
+   | Variable | Required | Where to get it |
+   | --- | --- | --- |
+   | `GEMINI_API_KEY` | Yes | [Google AI Studio](https://aistudio.google.com/apikey) |
+   | `PEXELS_API_KEY` | Recommended | [Pexels API](https://www.pexels.com/api/) — real photos in generated pages |
+   | `BLOB_READ_WRITE_TOKEN` | Only for Figma export | Vercel → Storage → Blob |
+   | `GEMINI_MODEL` | Optional | Defaults to `gemini-3.6-flash`. Set `gemini-2.5-flash` if your key cannot use 3.6 |
 
-3. **Run it locally**
+3. Run locally:
 
    ```bash
    npm run dev
@@ -41,38 +31,25 @@ clickable HTML/CSS/JS prototype rendered right in the browser.
 
    Open http://localhost:3000
 
-## Deploying
+## Deploy on Vercel
 
-This is a standard Next.js app — the easiest path is
-[Vercel](https://vercel.com):
+This is a Next.js app. Connect the GitHub repo in Vercel, then:
 
-```bash
-npm i -g vercel
-vercel
-```
+1. **Environment variables** (Project → Settings → Environment Variables) — set at least `GEMINI_API_KEY` and `PEXELS_API_KEY` for Production, Preview, and Development. Redeploy after saving.
+2. **Node.js** — Vercel should pick Node 20 from `.nvmrc`. If the build fails on Node 18, set Node.js Version to **20.x** in Project Settings.
+3. **Do not** set `ANTHROPIC_API_KEY`. This app uses Gemini.
+4. **Figma export** — add a Blob store so `BLOB_READ_WRITE_TOKEN` exists. Download HTML still works without it.
 
-Add `ANTHROPIC_API_KEY` as an environment variable in your Vercel project
-settings (Project → Settings → Environment Variables). Never commit your real
-`.env.local` — it's already in `.gitignore`.
+If generation fails on the live site, the most common causes are:
 
-## Where to take it next
+- Keys added only locally, not in Vercel
+- Gemini quota / invalid key
+- Prompt too large, so the function hits the 60s limit — try a shorter description
 
-- **Auth + saved projects**: add a database (Supabase/Postgres is fastest) and
-  save `{ prompt, image, code }` per user so people can come back to past
-  prototypes.
-- **Streaming**: switch the API route to `anthropic.messages.stream(...)` and
-  stream tokens to the frontend so the code appears as it's generated instead
-  of all at once.
-- **Export as React**: add a second model call that converts the generated
-  HTML into a React component, for users who want real code to build on.
-- **Templates/starting styles**: let users pick a starting aesthetic
-  (minimal, brutalist, playful) that gets folded into the system prompt.
-- **Rate limiting**: since every generation costs API credits, add per-user
-  limits before you open this up publicly (Vercel KV or Upstash work well for
-  simple rate limiting).
+## How it works
 
-## Cost note
-
-Each generation is one API call with up to 8000 output tokens (more if you
-attach images). Check current Claude API pricing at
-https://docs.claude.com before setting usage limits for real users.
+- Chat + live preview in `app/page.tsx`
+- Gemini generates one self-contained HTML page in `app/api/generate/route.ts`
+- `src="pexels:query"` markers are replaced with real Pexels photos
+- Follow-up messages send the current HTML back so you can refine
+- Multi-page nav uses `#page:slug` links inside the iframe

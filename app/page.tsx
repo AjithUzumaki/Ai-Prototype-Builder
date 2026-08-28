@@ -115,12 +115,10 @@ export default function Home() {
     reader.readAsDataURL(file);
   }
 
-  async function handleSend() {
-    if (!input.trim() && !image) return;
-    const promptText = input.trim() || "Build a prototype based on the attached image.";
+  const lastPromptRef = useRef<string>("");
+  const lastImageRef = useRef<{ base64: string; mediaType: string; name: string } | null>(null);
 
-    setMessages((m) => [...m, { role: "user", text: promptText }]);
-    setInput("");
+  async function performGenerate(promptText: string, imgOverride?: { base64: string; mediaType: string; name: string } | null) {
     setError(null);
     setLoading(true);
 
@@ -134,8 +132,8 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           prompt: promptText,
-          imageBase64: image?.base64,
-          imageMediaType: image?.mediaType,
+          imageBase64: imgOverride?.base64,
+          imageMediaType: imgOverride?.mediaType,
           previousCode: activePage.code || undefined,
           currentPageLabel: activePage.label,
           otherPages,
@@ -178,6 +176,38 @@ export default function Home() {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function handleSend() {
+    if (!input.trim() && !image) return;
+    const promptText = input.trim() || "Build a prototype based on the attached image.";
+
+    lastPromptRef.current = promptText;
+    lastImageRef.current = image;
+
+    setMessages((m) => [...m, { role: "user", text: promptText }]);
+    setInput("");
+
+    await performGenerate(promptText, image);
+  }
+
+  async function handleRetry() {
+    if (loading || !lastPromptRef.current) return;
+    setMessages((m) => [...m, { role: "user", text: `Retry: ${lastPromptRef.current}` }]);
+    await performGenerate(lastPromptRef.current, lastImageRef.current);
+  }
+
+  function handleClearChat() {
+    setMessages([
+      {
+        role: "assistant",
+        text: "Describe the website you want, or attach a design image. Add more pages with the + tab above the preview — nav links between pages will work automatically.",
+      },
+    ]);
+    setError(null);
+    setInput("");
+    setImage(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
   function handleDownload() {
@@ -250,13 +280,22 @@ export default function Home() {
     <main className="h-screen w-screen flex bg-ink text-paper font-body overflow-hidden">
       {/* Chat panel */}
       <section className="w-[400px] shrink-0 border-r border-line flex flex-col">
-        <header className="px-5 py-4 border-b border-line">
-          <h1 className="font-display text-lg font-semibold tracking-tight">
-            Prototype
-          </h1>
-          <p className="text-xs text-mist mt-0.5">
-            Describe it. Sketch it. Watch it animate.
-          </p>
+        <header className="px-5 py-4 border-b border-line flex items-center justify-between">
+          <div>
+            <h1 className="font-display text-lg font-semibold tracking-tight">
+              Prototype
+            </h1>
+            <p className="text-xs text-mist mt-0.5">
+              Describe it. Sketch it. Watch it animate.
+            </p>
+          </div>
+          <button
+            onClick={handleClearChat}
+            className="shrink-0 text-xs px-2.5 py-1.5 rounded-md border border-line text-mist hover:text-paper hover:border-mist transition-colors"
+            type="button"
+          >
+            Clear
+          </button>
         </header>
 
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
@@ -335,7 +374,19 @@ export default function Home() {
               {loading ? "..." : "Send"}
             </button>
           </div>
-          {error && <p className="text-xs text-amber">{error}</p>}
+          {error && (
+            <div className="space-y-2">
+              <p className="text-xs text-amber">{error}</p>
+              <button
+                onClick={handleRetry}
+                disabled={loading}
+                className="text-xs px-3 py-1.5 rounded-md border border-violet text-violet hover:bg-violet/10 disabled:opacity-40 transition-colors"
+                type="button"
+              >
+                {loading ? "Retrying..." : "Retry"}
+              </button>
+            </div>
+          )}
         </div>
       </section>
 

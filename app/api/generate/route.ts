@@ -7,6 +7,9 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 // Free-tier Gemini model. See README for how to change this.
 const MODEL = "gemini-3.6-flash";
+// Used automatically if the primary model is overloaded — a more established,
+// typically less congested model, as a reliability safety net.
+const FALLBACK_MODEL = "gemini-2.5-flash";
 
 const PEXELS_API_KEY = process.env.PEXELS_API_KEY;
 
@@ -154,10 +157,10 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    async function callModel() {
+    async function callModel(modelName: string) {
       return Promise.race([
         ai.models.generateContent({
-          model: MODEL,
+          model: modelName,
           contents: [{ role: "user", parts }],
           config: {
             systemInstruction: buildSystemPrompt(otherPages || []),
@@ -165,7 +168,7 @@ export async function POST(req: NextRequest) {
           },
         }),
         new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("MODEL_TIMEOUT")), 20000)
+          setTimeout(() => reject(new Error("MODEL_TIMEOUT")), 15000)
         ),
       ]) as any;
     }
@@ -181,27 +184,34 @@ export async function POST(req: NextRequest) {
     }
 
     let response;
-    try {
-      response = await callModel();
-    } catch (firstErr: any) {
-      if (!isOverloadError(firstErr)) throw firstErr;
+    let lastErr: any = null;
 
-      // One automatic retry after a short pause — covers brief overload spikes.
-      await new Promise((r) => setTimeout(r, 3000));
+    // Attempt order: primary, primary again, then fallback model.
+    // Total worst case stays comfortably under Vercel's 60s limit.
+    const attempts = [MODEL, MODEL, FALLBACK_MODEL];
+
+    for (let i = 0; i < attempts.length; i++) {
       try {
-        response = await callModel();
-      } catch (secondErr: any) {
-        if (isOverloadError(secondErr)) {
-          return NextResponse.json(
-            {
-              error:
-                "The AI model is currently experiencing high demand. Please wait a minute and try again.",
-            },
-            { status: 503 }
-          );
+        response = await callModel(attempts[i]);
+        lastErr = null;
+        break;
+      } catch (err: any) {
+        lastErr = err;
+        if (!isOverloadError(err)) throw err;
+        if (i < attempts.length - 1) {
+          await new Promise((r) => setTimeout(r, 2000));
         }
-        throw secondErr;
       }
+    }
+
+    if (lastErr) {
+      return NextResponse.json(
+        {
+          error:
+            "The AI model is currently experiencing high demand across all available models. Please wait a minute and try again.",
+        },
+        { status: 503 }
+      );
     }
 
     const raw = response.text ?? "";

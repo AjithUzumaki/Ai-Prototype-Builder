@@ -7,9 +7,9 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 // Free-tier Gemini model. See README for how to change this.
 const MODEL = "gemini-3.6-flash";
-// Used automatically if the primary model is overloaded — a more established,
-// typically less congested model, as a reliability safety net.
-const FALLBACK_MODEL = "gemini-2.5-flash";
+// Used automatically if the primary model is overloaded — a currently
+// supported, typically less congested model, as a reliability safety net.
+const FALLBACK_MODEL = "gemini-2.5-flash-lite";
 
 const PEXELS_API_KEY = process.env.PEXELS_API_KEY;
 

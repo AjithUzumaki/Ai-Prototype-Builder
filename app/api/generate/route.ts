@@ -75,12 +75,19 @@ async function resolvePexelsImages(html: string): Promise<string> {
   await Promise.all(
     uniqueQueries.map(async (query) => {
       try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
+
         const res = await fetch(
           `https://api.pexels.com/v1/search?query=${encodeURIComponent(
             query
           )}&per_page=1&orientation=landscape`,
-          { headers: { Authorization: PEXELS_API_KEY as string } }
+          {
+            headers: { Authorization: PEXELS_API_KEY as string },
+            signal: controller.signal,
+          }
         );
+        clearTimeout(timeoutId);
         const data = await res.json();
         const photoUrl =
           data?.photos?.[0]?.src?.large2x ||
@@ -152,7 +159,7 @@ export async function POST(req: NextRequest) {
       contents: [{ role: "user", parts }],
       config: {
         systemInstruction: buildSystemPrompt(otherPages || []),
-        maxOutputTokens: 32000,
+        maxOutputTokens: 16000,
       },
     });
 

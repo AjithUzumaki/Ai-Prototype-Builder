@@ -8,6 +8,8 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 // Free-tier Gemini model. See README for how to change this.
 const MODEL = "gemini-3.6-flash";
 
+const PEXELS_API_KEY = process.env.PEXELS_API_KEY;
+
 function buildSystemPrompt(otherPages: { slug: string; label: string }[]) {
   const pageList = otherPages.length
     ? otherPages.map((p) => `- slug: "${p.slug}", label: "${p.label}"`).join("\n")
@@ -22,12 +24,13 @@ Rules — follow exactly:
 4. Make the layout fully responsive (mobile, tablet, desktop).
 5. Use semantic HTML, visible keyboard focus states, and reasonable color contrast.
 6. If an image is supplied, treat it as the design reference: match its layout, palette, and content as closely as possible.
-7. For placeholder images, use https://picsum.photos/seed/<word>/<w>/<h> — never invent other external image URLs.
-8. If asked to refine existing code, return the FULL updated HTML document with the requested change applied — never a diff or partial snippet.
-9. Pick fonts from Google Fonts via a <link> tag if a distinctive typeface improves the design; otherwise use clean system fonts.
-10. Give the design a real point of view (a considered palette, real type scale, one signature visual moment) rather than a generic template.
-11. Keep scope realistic for a single response: one focused page (not a dozen dense sections) unless explicitly asked for a long page. Always finish the document completely — a valid ending </html> tag is mandatory, even if that means a simpler design.
-12. Write markup so it converts cleanly into design tools (e.g. Figma import plugins):
+7. For any image that should look like a real photograph (people, animals, nature, food, products, architecture, interiors, etc.), use this EXACT format for the src attribute: src="pexels:<short descriptive search phrase>" — for example src="pexels:lion in savanna" or src="pexels:fine dining plated steak" or src="pexels:modern minimalist living room". Write a specific, accurate search phrase that genuinely matches what the image should show — this will be used to fetch a real matching photo. Do NOT use picsum.photos or any other placeholder URL for photographic content.
+8. For simple decorative or abstract placeholder shapes where the actual content doesn't matter (e.g. a generic colored block), you may use https://picsum.photos/seed/<word>/<w>/<h> — never invent other external image URLs.
+9. If asked to refine existing code, return the FULL updated HTML document with the requested change applied — never a diff or partial snippet.
+10. Pick fonts from Google Fonts via a <link> tag if a distinctive typeface improves the design; otherwise use clean system fonts.
+11. Give the design a real point of view (a considered palette, real type scale, one signature visual moment) rather than a generic template.
+12. Keep scope realistic for a single response: one focused page (not a dozen dense sections) unless explicitly asked for a long page. Always finish the document completely — a valid ending </html> tag is mandatory, even if that means a simpler design.
+13. Write markup so it converts cleanly into design tools (e.g. Figma import plugins):
     - Prefer simple flexbox or CSS grid for layout; avoid complex nested positioning tricks.
     - Give every major section a clear, semantic class name (e.g. "hero-section", "nav-bar", "pricing-card") instead of generic or utility-soup class names.
     - Load fonts via a standard <link> tag (Google Fonts or system fonts); avoid custom @font-face or JS-injected font loading.
@@ -49,6 +52,58 @@ function extractHtml(raw: string): string {
   const fenced = raw.match(/```(?:html)?\s*([\s\S]*?)```/i);
   const candidate = fenced ? fenced[1] : raw;
   return candidate.trim();
+}
+
+// Finds src="pexels:<query>" occurrences and replaces them with real photo URLs.
+async function resolvePexelsImages(html: string): Promise<string> {
+  const regex = /src="pexels:([^"]+)"/g;
+  const matches = Array.from(html.matchAll(regex));
+
+  if (matches.length === 0) return html;
+
+  if (!PEXELS_API_KEY) {
+    // No key configured — fall back to picsum so the page still renders something.
+    return html.replace(regex, (_match, query: string) => {
+      const seed = encodeURIComponent(query.trim().replace(/\s+/g, "-"));
+      return `src="https://picsum.photos/seed/${seed}/800/600"`;
+    });
+  }
+
+  const uniqueQueries = Array.from(new Set(matches.map((m) => m[1].trim())));
+  const queryToUrl = new Map<string, string>();
+
+  await Promise.all(
+    uniqueQueries.map(async (query) => {
+      try {
+        const res = await fetch(
+          `https://api.pexels.com/v1/search?query=${encodeURIComponent(
+            query
+          )}&per_page=1&orientation=landscape`,
+          { headers: { Authorization: PEXELS_API_KEY as string } }
+        );
+        const data = await res.json();
+        const photoUrl =
+          data?.photos?.[0]?.src?.large2x ||
+          data?.photos?.[0]?.src?.large ||
+          data?.photos?.[0]?.src?.medium;
+
+        if (photoUrl) {
+          queryToUrl.set(query, photoUrl);
+        } else {
+          const seed = encodeURIComponent(query.replace(/\s+/g, "-"));
+          queryToUrl.set(query, `https://picsum.photos/seed/${seed}/800/600`);
+        }
+      } catch {
+        const seed = encodeURIComponent(query.replace(/\s+/g, "-"));
+        queryToUrl.set(query, `https://picsum.photos/seed/${seed}/800/600`);
+      }
+    })
+  );
+
+  return html.replace(regex, (_match, query: string) => {
+    const url = queryToUrl.get(query.trim()) || "https://picsum.photos/seed/fallback/800/600";
+    return `src="${url}"`;
+  });
 }
 
 export async function POST(req: NextRequest) {
@@ -102,7 +157,7 @@ export async function POST(req: NextRequest) {
     });
 
     const raw = response.text ?? "";
-    const html = extractHtml(raw);
+    let html = extractHtml(raw);
 
     if (!html) {
       return NextResponse.json(
@@ -120,6 +175,9 @@ export async function POST(req: NextRequest) {
         { status: 502 }
       );
     }
+
+    // Replace pexels: markers with real, relevant photo URLs.
+    html = await resolvePexelsImages(html);
 
     return NextResponse.json({ code: html });
   } catch (err: any) {

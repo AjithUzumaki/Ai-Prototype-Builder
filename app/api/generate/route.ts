@@ -7,7 +7,6 @@ export const maxDuration = 60;
 
 const MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
 const FALLBACK_MODELS = [
-  "gemini-2.5-flash",
   "gemini-2.5-flash-lite",
 ];
 
@@ -175,7 +174,7 @@ function friendlyGeminiError(err: any): { message: string; status: number } {
   if (msg.includes("not found") || msg.includes("NOT_FOUND") || status === 404) {
     return {
       message:
-        "The Gemini model name is not available on this key. Try setting GEMINI_MODEL to gemini-2.5-flash in Vercel env vars.",
+        "The Gemini model name is not available on this key. Check GEMINI_MODEL is unset or valid in Vercel env vars.",
       status: 502,
     };
   }

@@ -5,9 +5,9 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-const MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
+const MODEL = process.env.GEMINI_MODEL || "gemini-flash-latest";
 const FALLBACK_MODELS = [
-  "gemini-2.5-flash-lite",
+  "gemini-flash-lite-latest",
 ];
 
 const PEXELS_API_KEY = process.env.PEXELS_API_KEY;
